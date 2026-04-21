@@ -13,8 +13,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# DB lives on a mounted volume at /data
-ENV SQLITE_DB_PATH=/data/easels.db
+# DB lives inside the container (persists as long as container runs)
+ENV SQLITE_DB_PATH=/app/easels.db
+
+# Initialise empty DB schema at build time
+RUN python -m db.init_db
 
 EXPOSE 8000
 

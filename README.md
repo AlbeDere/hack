@@ -2,8 +2,8 @@
 
 AI-powered study companion. Upload course PDFs, then ask questions, generate quizzes, get study plans, and listen to Estonian summaries.
 
-**Live API:** `http://easels-api.dzhudjbeh3cpffdj.swedencentral.azurecontainer.io:8000`  
-**Interactive docs (Swagger):** `http://easels-api.dzhudjbeh3cpffdj.swedencentral.azurecontainer.io:8000/docs`
+**Live API:** `http://easels-api.swedencentral.azurecontainer.io:8000`  
+**Interactive docs (Swagger):** `http://easels-api.swedencentral.azurecontainer.io:8000/docs`
 
 All endpoints accept and return JSON. All `course` fields are optional filters — omit to search across all uploaded material.
 
