@@ -29,6 +29,51 @@ _config = {
 }
 
 
+def call_llm_stream(
+    prompt: str,
+    system: str = None,
+):
+    """
+    Stream Azure OpenAI chat completions token by token.
+    Yields string chunks as they arrive.
+    """
+    url = (
+        f"{AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPLOYMENT}"
+        f"/chat/completions?api-version={AZURE_API_VERSION}"
+    )
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "messages": messages,
+        "stream": True,
+        **_config,
+    }
+
+    time.sleep(1)
+    with requests.post(url, headers=_headers, json=payload, stream=True, timeout=120) as response:
+        if response.status_code != 200:
+            raise RuntimeError(f"LLM stream failed ({response.status_code}): {response.text[:200]}")
+        for line in response.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8")
+            if line.startswith("data: "):
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+
+
 def call_llm(
     prompt: str,
     system: str = None,

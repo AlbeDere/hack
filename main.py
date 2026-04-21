@@ -12,18 +12,23 @@ Endpoints:
   GET  /quiz/weak           — get weakest concepts by quiz history
 """
 
+import json
 import os
 import shutil
 import tempfile
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ingest import ingest
-from rag import rag
+from rag import rag, rag_stream
 from summary import build_summary
 from speech import synthesize
+from plan import generate_plan
+from homework_helper import homework_help
+from sm2 import update_sm2, get_next_concept
 from quiz import list_concepts as _list_concepts
 from quiz import (
     get_chunks_for_concept,
@@ -52,6 +57,7 @@ class RAGRequest(BaseModel):
     question: str
     course: str | None = None
     top_k: int = 5
+    history: list[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
 
 
 class RAGResponse(BaseModel):
@@ -76,6 +82,30 @@ class QuizResultRequest(BaseModel):
     course: str | None = None
     score: int
     total: int
+
+
+class PlanRequest(BaseModel):
+    course: str | None = None
+    days_until_exam: int
+    target_grade: str = "5"
+    limit_weak: int = 10
+
+
+class HomeworkRequest(BaseModel):
+    model_config = {"json_schema_extra": {"example": {
+        "question": "Miks kasutatakse alalisvooluliine pikkade kaabelliinide korral?",
+        "course": "Elektrisüsteem",
+    }}}
+
+    question: str
+    course: str | None = None
+    top_k: int = 5
+
+
+class SM2UpdateRequest(BaseModel):
+    concept: str
+    course: str
+    quality: int  # 0-5
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +160,7 @@ def get_courses():
 
 @app.post("/rag", response_model=RAGResponse, summary="Ask a question")
 def ask(req: RAGRequest):
-    result = rag(req.question, course=req.course, top_k=req.top_k)
+    result = rag(req.question, course=req.course, top_k=req.top_k, history=req.history)
     return result
 
 
@@ -183,6 +213,11 @@ class SummaryAudioRequest(BaseModel):
     speaker: str = "mari"
 
 
+class TTSRequest(BaseModel):
+    text: str
+    speaker: str = "mari"
+
+
 @app.post("/summary", summary="Estonian text summary from retrieved chunks")
 def summary(req: SummaryAudioRequest):
     result = build_summary(
@@ -194,23 +229,81 @@ def summary(req: SummaryAudioRequest):
     return result
 
 
-@app.post("/summary-audio", summary="Estonian summary as WAV audio")
-def summary_audio(req: SummaryAudioRequest):
-    result = build_summary(
-        topic=req.topic,
-        course=req.course,
-        top_k=req.top_k,
-        chunk_ids=req.chunk_ids or None,
-    )
-    summary_text = result["summary"]
+@app.post("/tts", summary="Convert text to Estonian speech (WAV)")
+def tts(req: TTSRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
     try:
-        wav_bytes = synthesize(summary_text, speaker=req.speaker)
+        wav_bytes = synthesize(req.text, speaker=req.speaker)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
-    return Response(
-        content=wav_bytes,
-        media_type="audio/wav",
-        headers={
-            "X-Summary": summary_text[:500],
-        },
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+# ---------------------------------------------------------------------------
+# Streaming RAG
+# ---------------------------------------------------------------------------
+
+@app.post("/rag/stream", summary="Stream RAG answer token by token")
+def rag_stream_endpoint(req: RAGRequest):
+    def event_stream():
+        for chunk in rag_stream(req.question, course=req.course, top_k=req.top_k):
+            yield f"data: {json.dumps({'token': chunk})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Study Plan
+# ---------------------------------------------------------------------------
+
+@app.post("/plan", summary="Generate a study plan based on weak concepts")
+def plan(req: PlanRequest):
+    weak = get_weak_concepts(req.course, req.limit_weak)
+    concept_names = [w["concept"] for w in weak]
+    result = generate_plan(
+        weak_concepts=concept_names,
+        days_until_exam=req.days_until_exam,
+        target_grade=req.target_grade,
+        course=req.course,
     )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Homework Helper
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/homework-helper",
+    summary="Guided hints without direct answers",
+    description=(
+        "Use this instead of `/rag` when the student is working on a homework problem "
+        "and should find the answer themselves. "
+        "The AI will point to relevant material, ask guiding questions, and give hints — "
+        "**but will never reveal the direct answer**. "
+        "Response: `{guidance: str, sources: list}`."
+    ),
+)
+def homework_helper(req: HomeworkRequest):
+    return homework_help(req.question, course=req.course, top_k=req.top_k)
+
+
+# ---------------------------------------------------------------------------
+# Spaced Repetition (SM-2)
+# ---------------------------------------------------------------------------
+
+@app.get("/quiz/next", summary="Get next concept due for review (SM-2)")
+def quiz_next(course: str | None = None):
+    concept = get_next_concept(course)
+    if not concept:
+        return {"concept": None, "message": "No concepts due for review."}
+    return concept
+
+
+@app.post("/quiz/sm2", summary="Update SM-2 state after a quiz attempt")
+def quiz_sm2(req: SM2UpdateRequest):
+    if not 0 <= req.quality <= 5:
+        raise HTTPException(status_code=400, detail="quality must be 0-5")
+    return update_sm2(req.concept, req.course, req.quality)

@@ -56,3 +56,13 @@ CREATE TABLE IF NOT EXISTS quiz_results (
     -- 1 if this is the personal best
     taken_at TEXT DEFAULT (datetime('now'))
 );
+-- SM-2 spaced repetition state per concept
+CREATE TABLE IF NOT EXISTS sm2_state (
+    concept TEXT NOT NULL,
+    course TEXT NOT NULL,
+    easiness REAL NOT NULL DEFAULT 2.5,
+    interval INTEGER NOT NULL DEFAULT 1,
+    repetitions INTEGER NOT NULL DEFAULT 0,
+    next_review TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (concept, course)
+);
