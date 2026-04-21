@@ -235,6 +235,117 @@ def get_weak_concepts(course: str = None, limit: int = 5) -> list[dict]:
         conn.close()
 
 
+def get_progress(course: str | None = None) -> dict:
+    """
+    Return a stats dashboard:
+    - total_concepts: how many concepts exist
+    - concepts_attempted: how many have at least one quiz result
+    - concepts_mastered: how many have best_pct >= 80
+    - avg_score: overall average best percentage
+    - per_concept: list with scores and next SM-2 review date
+    - streak_days: how many consecutive days the user has attempted at least one quiz
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Total concepts
+        if course:
+            cur.execute("SELECT COUNT(*) AS n FROM concepts WHERE lower(course)=lower(?)", (course,))
+        else:
+            cur.execute("SELECT COUNT(*) AS n FROM concepts")
+        total_concepts = cur.fetchone()["n"]
+
+        # Per-concept stats joined with SM-2
+        if course:
+            cur.execute(
+                """
+                SELECT
+                    qr.concept,
+                    MAX(qr.percentage)   AS best_pct,
+                    AVG(qr.percentage)   AS avg_pct,
+                    COUNT(*)             AS attempts,
+                    sm.next_review,
+                    sm.interval          AS interval_days,
+                    sm.repetitions,
+                    sm.easiness
+                FROM quiz_results qr
+                LEFT JOIN sm2_state sm ON sm.concept = qr.concept AND sm.course = qr.course
+                WHERE lower(qr.course) = lower(?)
+                GROUP BY qr.concept
+                ORDER BY best_pct ASC
+                """,
+                (course,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT
+                    qr.concept,
+                    MAX(qr.percentage)   AS best_pct,
+                    AVG(qr.percentage)   AS avg_pct,
+                    COUNT(*)             AS attempts,
+                    sm.next_review,
+                    sm.interval          AS interval_days,
+                    sm.repetitions,
+                    sm.easiness
+                FROM quiz_results qr
+                LEFT JOIN sm2_state sm ON sm.concept = qr.concept AND sm.course = qr.course
+                GROUP BY qr.concept
+                ORDER BY best_pct ASC
+                """
+            )
+        per_concept = [dict(r) for r in cur.fetchall()]
+
+        concepts_attempted = len(per_concept)
+        concepts_mastered = sum(1 for c in per_concept if (c["best_pct"] or 0) >= 80)
+        avg_score = round(
+            sum(c["best_pct"] or 0 for c in per_concept) / concepts_attempted, 1
+        ) if concepts_attempted else 0
+
+        # Streak: count consecutive days (UTC) with at least one quiz result
+        if course:
+            cur.execute(
+                """
+                SELECT DISTINCT date(taken_at) AS day
+                FROM quiz_results
+                WHERE lower(course) = lower(?)
+                ORDER BY day DESC
+                """,
+                (course,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DISTINCT date(taken_at) AS day
+                FROM quiz_results
+                ORDER BY day DESC
+                """
+            )
+        days = [r["day"] for r in cur.fetchall()]
+
+        from datetime import date, timedelta as td
+        streak = 0
+        today = date.today()
+        for i, day_str in enumerate(days):
+            expected = (today - td(days=i)).isoformat()
+            if day_str == expected:
+                streak += 1
+            else:
+                break
+
+        return {
+            "total_concepts": total_concepts,
+            "concepts_attempted": concepts_attempted,
+            "concepts_mastered": concepts_mastered,
+            "avg_score": avg_score,
+            "streak_days": streak,
+            "per_concept": per_concept,
+        }
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # 6. Quiz loop
 # ---------------------------------------------------------------------------

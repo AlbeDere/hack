@@ -57,6 +57,57 @@ List all extracted concepts, optionally filtered by course.
 
 ---
 
+### `GET /documents?course=Elektrisüsteem`
+
+List all ingested documents, optionally filtered by course.
+
+**Response:**
+
+```json
+{
+  "documents": [
+    {
+      "id": 1,
+      "title": "Loeng 1",
+      "course": "Elektrisüsteem",
+      "uploaded_at": "2026-04-21 19:30:00"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /concepts/{concept}/sources?course=Elektrisüsteem`
+
+Get all source documents and page numbers that contain a given concept. Use this to show students where to read about a topic.
+
+```
+GET /concepts/nimipinged/sources
+GET /concepts/nimipinged/sources?course=Elektrisüsteem
+```
+
+**Response:**
+
+```json
+{
+  "concept": "nimipinged",
+  "sources": [
+    {
+      "id": 1,
+      "title": "Loeng 1",
+      "course": "Elektrisüsteem",
+      "pages": [12, 15, 23]
+    }
+  ]
+}
+```
+
+- Returns 404 if the concept does not exist in the database.
+- `pages` lists every page in the document where the concept appears.
+
+---
+
 ### `POST /rag`
 
 Ask a question. The AI retrieves relevant chunks from uploaded material and answers using only those sources. Supports multi-turn chat via `history`.
@@ -187,9 +238,9 @@ Convert text to Estonian speech. Returns a WAV audio file.
 
 ### `POST /quiz/generate`
 
-Generate quiz questions for a concept, grounded in the uploaded material.
+Generate quiz questions grounded in the uploaded material. Supports a single concept or multiple concepts at once.
 
-**Request:**
+**Single concept:**
 
 ```json
 {
@@ -199,6 +250,20 @@ Generate quiz questions for a concept, grounded in the uploaded material.
 }
 ```
 
+**Multiple concepts:**
+
+```json
+{
+  "concepts": ["nimipinged", "alalisvool", "põhivõrk"],
+  "course": "Elektrisüsteem",
+  "n_questions": 8
+}
+```
+
+- `concept` — single concept string (legacy, still works)
+- `concepts` — list of concept names; chunks from all are merged and deduplicated
+- `n_questions` — total number of questions to generate (default `5`)
+
 **Response:**
 
 ```json
@@ -206,7 +271,10 @@ Generate quiz questions for a concept, grounded in the uploaded material.
   "questions": [
     {
       "question": "Millised nimipinged vastavad IEC standarditele Eesti kõrgepingevõrkudes?",
-      "source_text": "Eesti kõrgepingevõrkudes vastavad IEC-standarditele nimipinged 10, 20, 35, 110 ja 220 kV..."
+      "source_text": "Eesti kõrgepingevõrkudes vastavad IEC-standarditele nimipinged 10, 20, 35, 110 ja 220 kV...",
+      "page_number": 1,
+      "document_title": "Loeng 1",
+      "concept": "nimipinged"
     }
   ]
 }
@@ -244,7 +312,7 @@ Evaluate a student's answer to a quiz question. Returns feedback and a score.
 
 ### `POST /quiz/result`
 
-Save the result of a completed quiz attempt. Used to track weak concepts and power the study plan.
+Save the result of a completed quiz attempt. Optionally updates SM-2 in the same call by including `quality` — saves a separate round-trip.
 
 **Request:**
 
@@ -253,14 +321,27 @@ Save the result of a completed quiz attempt. Used to track weak concepts and pow
   "concept": "nimipinged",
   "course": "Elektrisüsteem",
   "score": 2,
-  "total": 3
+  "total": 3,
+  "quality": 4
 }
 ```
 
-**Response:**
+- `quality` (0-5, optional) — if provided, SM-2 state is updated in the same call. Omit to skip SM-2.
+
+**Response (with quality):**
 
 ```json
-{ "percentage": 66.7, "is_personal_best": true }
+{
+  "percentage": 66.7,
+  "is_personal_best": true,
+  "sm2": {
+    "concept": "nimipinged",
+    "next_review": "2026-04-28",
+    "interval_days": 6,
+    "easiness": 2.5,
+    "repetitions": 2
+  }
+}
 ```
 
 ---
@@ -397,6 +478,39 @@ Generate a day-by-day study plan grounded in actual uploaded material. Automatic
 
 ---
 
+### `GET /progress?course=Elektrisüsteem`
+
+Stats dashboard for a student. Shows quiz scores, mastery level, SM-2 schedule, and daily streak.
+
+**Response:**
+
+```json
+{
+  "total_concepts": 12,
+  "concepts_attempted": 3,
+  "concepts_mastered": 1,
+  "avg_score": 62.5,
+  "streak_days": 2,
+  "per_concept": [
+    {
+      "concept": "alalisvool",
+      "best_pct": 33.3,
+      "avg_pct": 28.5,
+      "attempts": 2,
+      "next_review": "2026-04-22 10:00:00",
+      "interval_days": 1,
+      "repetitions": 1,
+      "easiness": 2.36
+    }
+  ]
+}
+```
+
+- `concepts_mastered` — concepts with best score ≥ 80%
+- `streak_days` — consecutive calendar days with at least one quiz attempt
+
+---
+
 ## Typical Frontend Flows
 
 ### Chat / Q&A
@@ -416,8 +530,7 @@ GET /quiz/next (or let user pick concept)
 → POST /quiz/generate
 → show questions one by one, collect answers
 → POST /quiz/evaluate per answer → show feedback
-→ POST /quiz/result (total score)
-→ POST /quiz/sm2 (quality 0-5 based on percentage)
+→ POST /quiz/result with quality field (saves score + updates SM-2 in one call)
 ```
 
 ### Summary + Audio
